@@ -7,6 +7,8 @@
 //
 
 import UIKit
+import RxCocoa
+import RxSwift
 import Kingfisher
 
 class MovieListViewController: UIViewController {
@@ -16,40 +18,37 @@ class MovieListViewController: UIViewController {
     @IBOutlet weak var infoLabel: UILabel!
     @IBOutlet weak var segmentedControl: UISegmentedControl!
     
-    let movieService: MovieService = MovieStore.shared
-    var movies = [Movie]() {
-        didSet {
-            tableView.reloadData()
-        }
-    }
-    
-    var endpoint = Endpoint.nowPlaying {
-        didSet {
-            fetchMovies()
-        }
-    }
+    var movieListViewViewModel: MovieListViewViewModel!
+    let disposeBag = DisposeBag()
     
     override func viewDidLoad() {
         super.viewDidLoad()
         
-        segmentedControl.addTarget(self, action: #selector(segmentChanged(_:)), for: .valueChanged)
-        setupTableView()
-        fetchMovies()
-    }
-    
-    private func fetchMovies() {
-        self.movies = []
-        activityIndicatorView.startAnimating()
-        infoLabel.isHidden = true
+        self.movieListViewViewModel = MovieListViewViewModel(
+            endpoint: self.segmentedControl.rx.selectedSegmentIndex
+                .map { Endpoint(index: $0) ?? .nowPlaying }
+                .asDriver(onErrorJustReturn: .nowPlaying),
+            movieService: MovieStore.shared
+        )
         
-        movieService.fetchMovies(from: endpoint, params: nil, successHandler: {[unowned self] (response) in
-            self.activityIndicatorView.stopAnimating()
-            self.movies = response.results
-        }) { [unowned self] (error) in
-            self.activityIndicatorView.stopAnimating()
-            self.infoLabel.text = error.localizedDescription
-            self.infoLabel.isHidden = false
-        }
+        self.movieListViewViewModel.movies.drive(onNext: { [unowned self] (_) in
+            self.tableView.reloadData()
+        }).disposed(by: self.disposeBag)
+        
+        self.movieListViewViewModel
+            .isFetching
+            .drive(self.activityIndicatorView.rx.isAnimating)
+            .disposed(by: self.disposeBag)
+        
+        self.movieListViewViewModel
+            .error
+            .drive(onNext: { [unowned self] errorMessage in
+                self.infoLabel.isHidden = !self.movieListViewViewModel.hasError
+                self.infoLabel.text = errorMessage
+            })
+            .disposed(by: self.disposeBag)
+        
+        self.setupTableView()
     }
     
     private func setupTableView() {
@@ -58,16 +57,12 @@ class MovieListViewController: UIViewController {
         tableView.estimatedRowHeight = 100
         tableView.register(UINib(nibName: "MovieCell", bundle: nil), forCellReuseIdentifier: "MovieCell")
     }
-    
-    @objc func segmentChanged(_ sender: UISegmentedControl) {
-        endpoint = sender.endpoint
-    }
 }
 
 extension MovieListViewController: UITableViewDataSource, UITableViewDelegate {
     
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        return movies.count
+        return self.movieListViewViewModel.numberOfMovies
     }
     
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -75,9 +70,9 @@ extension MovieListViewController: UITableViewDataSource, UITableViewDelegate {
             .dequeueReusableCell(withIdentifier: "MovieCell", for: indexPath)
             as! MovieCell
         
-        let movie = movies[indexPath.row]
-        let viewModel = MovieViewViewModel(movie: movie)
-        cell.configure(viewModel: viewModel)
+        if let viewModel = self.movieListViewViewModel.viewModelForMovie(at: indexPath.row) {
+            cell.configure(viewModel: viewModel)
+        }
         
         return cell
     }

@@ -7,6 +7,8 @@
 //
 
 import UIKit
+import RxSwift
+import RxCocoa
 
 class MovieSearchViewController: UIViewController {
     
@@ -14,17 +16,54 @@ class MovieSearchViewController: UIViewController {
     @IBOutlet weak var infoLabel: UILabel!
     @IBOutlet weak var activityIndicatorView: UIActivityIndicatorView!
     
-    var service: MovieService = MovieStore.shared
-    var movies = [Movie]() {
-        didSet {
-            tableView.reloadData()
-        }
-    }
+    let disposeBag = DisposeBag()
+    var movieSearchViewViewModel: MovieSearchViewViewModel!
     
     override func viewDidLoad() {
         super.viewDidLoad()
         
         setupNavigationBar()
+        let searchBar = self.navigationItem.searchController!.searchBar
+        
+        self.movieSearchViewViewModel = MovieSearchViewViewModel(
+            query: searchBar.rx.text.orEmpty.asDriver(),
+            movieService: MovieStore.shared
+        )
+        
+        self.movieSearchViewViewModel
+            .movies
+            .drive(onNext: { [unowned self] _ in
+                self.tableView.reloadData()
+            })
+            .disposed(by: self.disposeBag)
+        
+        self.movieSearchViewViewModel
+            .isFetching
+            .drive(self.activityIndicatorView.rx.isAnimating)
+            .disposed(by: self.disposeBag)
+        
+        self.movieSearchViewViewModel
+            .info
+            .drive(onNext: { [unowned self] info in
+                self.infoLabel.text = info
+                self.infoLabel.isHidden = self.movieSearchViewViewModel.hasInfo
+            })
+            .disposed(by: self.disposeBag)
+        
+        searchBar.rx.searchButtonClicked
+            .asDriver(onErrorJustReturn: ())
+            .drive(onNext: { [unowned searchBar] _ in
+                searchBar.resignFirstResponder()
+            })
+            .disposed(by: self.disposeBag)
+        
+        searchBar.rx.cancelButtonClicked
+            .asDriver(onErrorJustReturn: ())
+            .drive(onNext: { [unowned searchBar] _ in
+                searchBar.resignFirstResponder()
+            })
+            .disposed(by: self.disposeBag)
+        
         setupTableView()
     }
     
@@ -35,7 +74,7 @@ class MovieSearchViewController: UIViewController {
         navigationItem.searchController?.hidesNavigationBarDuringPresentation = false
         
         navigationItem.searchController?.searchBar.sizeToFit()
-        navigationItem.searchController?.searchBar.delegate = self
+//        navigationItem.searchController?.searchBar.delegate = self
         navigationItem.hidesSearchBarWhenScrolling = false
         navigationController?.navigationBar.prefersLargeTitles = true
     }
@@ -46,37 +85,12 @@ class MovieSearchViewController: UIViewController {
         tableView.estimatedRowHeight = 100
         tableView.register(UINib(nibName: "MovieCell", bundle: nil), forCellReuseIdentifier: "MovieCell")
     }
-    
-    private func searchMovie(query: String?) {
-        guard let query = query, !query.isEmpty else {
-            return
-        }
-        
-        self.movies = []
-        activityIndicatorView.startAnimating()
-        infoLabel.isHidden = true
-        service.searchMovie(query: query, params: nil, successHandler: {[unowned self] (response) in
-            
-            self.activityIndicatorView.stopAnimating()
-            if response.totalResults == 0 {
-                self.infoLabel.text = "No results for \(query)"
-                self.infoLabel.isHidden = false
-            }
-            self.movies = Array(response.results.prefix(5))
-        }) { [unowned self] (error) in
-            self.activityIndicatorView.stopAnimating()
-            self.infoLabel.isHidden = false
-            self.infoLabel.text = error.localizedDescription
-        }
-        
-    }
-    
 }
 
 extension MovieSearchViewController: UITableViewDataSource, UITableViewDelegate {
     
     func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
-        return movies.count
+        return self.movieSearchViewViewModel.numberMovies
     }
     
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -84,39 +98,10 @@ extension MovieSearchViewController: UITableViewDataSource, UITableViewDelegate 
             .dequeueReusableCell(withIdentifier: "MovieCell", for: indexPath)
             as! MovieCell
         
-        let movie = movies[indexPath.row]
-        let viewModel = MovieViewViewModel(movie: movie)
-        cell.configure(viewModel: viewModel)
+        if let viewModel = self.movieSearchViewViewModel.viewModelForMovie(at: indexPath.row) {
+            cell.configure(viewModel: viewModel)
+        }
         
         return cell
     }
-        
 }
-
-extension MovieSearchViewController: UISearchBarDelegate {
-    
-    func searchBarSearchButtonClicked(_ searchBar: UISearchBar) {
-        searchBar.resignFirstResponder()
-        
-        searchMovie(query: searchBar.text)
-    }
-    
-    func searchBarCancelButtonClicked(_ searchBar: UISearchBar) {
-        searchBar.resignFirstResponder()
-        
-        self.movies = []
-        self.infoLabel.text = "Start searching your favourite movies"
-        self.infoLabel.isHidden = false
-    }
-    
-    func searchBar(_ searchBar: UISearchBar, textDidChange searchText: String) {
-        self.movies = []
-        if searchText.isEmpty {
-            self.infoLabel.text = "Start searching your favourite movies"
-            self.infoLabel.isHidden = false
-        }
-    }
-    
-}
-
-
